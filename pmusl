@@ -1,0 +1,97 @@
+#!/bin/sh
+set -eu
+
+msg() { printf '%s\n' "$*" >&2; }
+
+## Check if the script is being traced
+if [ "$(grep -F 'TracerPid:' /proc/self/status | awk '{print $2}')" -ne 0 ]; then
+	msg "This process is being traced."
+	exit 1
+fi
+
+DATA_DIR="${HOME}/.pmusl"
+mkdir -p "${DATA_DIR}"
+
+if command -v curl >/dev/null; then
+	DL2STDOUT="curl -Lk --progress-bar"
+elif command -v wget >/dev/null; then
+	DL2STDOUT="wget -O- -q --show-progress"
+else
+	msg "Cannot find curl or wget"
+	exit 1
+fi
+
+## Prepare musl-c rootfs
+ALPINE_ARCH=$(uname -m)
+if [ ! -f "${DATA_DIR}/lib/ld-musl-${ALPINE_ARCH}.so.1" ]; then
+	msg "Downloading musl"
+	${DL2STDOUT} http://dl-cdn.alpinelinux.org/alpine/edge/main/${ALPINE_ARCH}/musl-1.2.5-r9.apk | gzip -d | tar -x -C "${DATA_DIR}" lib 2>/dev/null
+fi
+
+if [ ! -f "${DATA_DIR}/usr/lib/libgcc_s.so.1" ]; then
+	msg "Downloading libgcc"
+	${DL2STDOUT} http://dl-cdn.alpinelinux.org/alpine/edge/main/${ALPINE_ARCH}/libgcc-14.2.0-r5.apk | gzip -d | tar -x -C "${DATA_DIR}" usr 2>/dev/null
+fi
+
+if [ ! -f "${DATA_DIR}/usr/lib/libstdc++.so.6" ]; then
+	msg "Downloading libstdc++"
+	${DL2STDOUT} http://dl-cdn.alpinelinux.org/alpine/edge/main/${ALPINE_ARCH}/libstdc++-14.2.0-r5.apk | gzip -d | tar -x -C "${DATA_DIR}" usr 2>/dev/null
+fi
+
+if [ ! -d "${DATA_DIR}/etc" ]; then
+	mkdir -p "${DATA_DIR}/etc"
+fi
+
+if [ ! -f "${DATA_DIR}/ect/resolv.conf" ]; then
+	cat <<EOF >"${DATA_DIR}/etc/resolv.conf"
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+EOF
+fi
+
+if [ ! -f "${DATA_DIR}/etc/hosts" ]; then
+	cat <<EOF >"${DATA_DIR}/etc/hosts"
+127.0.0.1 localhost
+::1 localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+EOF
+fi
+
+if [ ! -f "${DATA_DIR}/etc/passwd" ]; then
+	cat <<EOF >"${DATA_DIR}/etc/passwd"
+root:x:0:0:root:/root:/bin/sh
+bin:x:1:1:bin:/bin:/sbin/nologin
+daemon:x:2:2:daemon:/sbin:/sbin/nologin
+lp:x:4:7:lp:/var/spool/lpd:/sbin/nologin
+sync:x:5:0:sync:/sbin:/bin/sync
+shutdown:x:6:0:shutdown:/sbin:/sbin/shutdown
+halt:x:7:0:halt:/sbin:/sbin/halt
+mail:x:8:12:mail:/var/mail:/sbin/nologin
+news:x:9:13:news:/usr/lib/news:/sbin/nologin
+uucp:x:10:14:uucp:/var/spool/uucppublic:/sbin/nologin
+cron:x:16:16:cron:/var/spool/cron:/sbin/nologin
+ftp:x:21:21::/var/lib/ftp:/sbin/nologin
+sshd:x:22:22:sshd:/dev/null:/sbin/nologin
+games:x:35:35:games:/usr/games:/sbin/nologin
+ntp:x:123:123:NTP:/var/empty:/sbin/nologin
+guest:x:405:100:guest:/dev/null:/sbin/nologin
+nobody:x:65534:65534:nobody:/:/sbin/nologin
+user:x:1000:1000:Linux User,,,:/home/user:/bin/bash
+EOF
+fi
+
+unset LD_PRELOAD
+export PROOT_TMP_DIR="${TMPDIR}"
+
+exec proot \
+	--change-id=1000:1000 \
+	--kill-on-exit \
+	--bind="${DATA_DIR}/etc/resolv.conf:/etc/resolv.conf" \
+	--bind="${DATA_DIR}/etc/hosts:/etc/hosts" \
+	--bind="${DATA_DIR}/etc/passwd:/etc/passwd" \
+	--bind="${DATA_DIR}/lib:/lib" \
+	--bind="${DATA_DIR}/usr:/usr" \
+	--bind=/system/bin/env:/usr/bin/env \
+	--bind=/system/bin/sh:/bin/sh \
+	"$@"
